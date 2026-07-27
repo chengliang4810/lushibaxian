@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">炉石拔线</string>
+    <string name="tagline">对局中一键跳过长动画</string>
+    <string name="status_idle">未运行</string>
+    <string name="status_running">运行中</string>
+    <string name="status_hint_idle">启动后显示悬浮球，对局中点「拔」</string>
+    <string name="status_hint_running">悬浮球已就绪 · 点「拔」触发重连</string>
+    <string name="action_start">启动</string>
+    <string name="action_stop">停止</string>
+    <string name="latency_label">网络延迟</string>
+    <string name="latency_value">%1$d ms</string>
+    <string name="latency_unknown">—</string>
+    <string name="latency_measuring">测速中</string>
+    <string name="perm_overlay">悬浮窗</string>
+    <string name="perm_vpn">网络权限</string>
+    <string name="perm_game">炉石传说</string>
+    <string name="perm_ok">已就绪</string>
+    <string name="perm_need">待授权</string>
+    <string name="perm_missing">未安装</string>
+    <string name="perm_grant_overlay">开启悬浮窗</string>
+    <string name="perm_grant_vpn">允许网络权限</string>
+    <string name="toast_need_overlay">请先开启悬浮窗权限</string>
+    <string name="toast_need_vpn">请先允许网络权限</string>
+    <string name="toast_game_missing">未检测到炉石传说，已启动服务</string>
+    <string name="toast_started">已启动</string>
+    <string name="toast_stopped">已停止</string>
+    <string name="toast_vpn_denied">未授权，无法启动</string>
+    <string name="notification_channel_name">运行服务</string>
+    <string name="notification_channel_desc">保持悬浮球与网络服务运行</string>
+    <string name="notification_title">炉石拔线运行中</string>
+    <string name="notification_text">对局中点击悬浮球「拔」</string>
+    <string name="float_ball_label">拔</string>
+    <string name="hs_package">com.blizzard.wtcg.hearthstone.cn.baidu_sem_dev</string>
+</resources>

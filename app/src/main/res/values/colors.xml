@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Signal-deck palette: night slate + copper pulse -->
+    <color name="bg_deep">#0B0F14</color>
+    <color name="bg_panel">#141A22</color>
+    <color name="bg_panel_elevated">#1B2330</color>
+    <color name="line_subtle">#2A3444</color>
+    <color name="text_primary">#E8EDF5</color>
+    <color name="text_secondary">#8B97A8</color>
+    <color name="text_muted">#5C6A7C</color>
+    <color name="accent_copper">#D4A15A</color>
+    <color name="accent_copper_dim">#8A6A3A</color>
+    <color name="signal_live">#3DDC97</color>
+    <color name="signal_live_dim">#1F6B4A</color>
+    <color name="signal_warn">#E8A54B</color>
+    <color name="signal_off">#4A5564</color>
+    <color name="btn_start">#D4A15A</color>
+    <color name="btn_start_text">#1A1208</color>
+    <color name="btn_stop">#2A3444</color>
+    <color name="btn_stop_text">#E8EDF5</color>
+    <color name="btn_ghost_stroke">#3A4658</color>
+
+    <!-- Legacy / float ball -->
+    <color name="primary">#141A22</color>
+    <color name="primary_dark">#0B0F14</color>
+    <color name="accent">#D4A15A</color>
+    <color name="ball_idle">#D4A15A</color>
+    <color name="ball_pulling">#E05A4F</color>
+    <color name="ball_cooldown">#4A5564</color>
+    <color name="white">#FFFFFF</color>
+    <color name="bg">#0B0F14</color>
+    <color name="ok">#3DDC97</color>
+    <color name="warn">#E8A54B</color>
+</resources>
