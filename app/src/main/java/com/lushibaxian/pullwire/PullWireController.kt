@@ -63,7 +63,24 @@ object PullWireController {
         try {
             context.startService(intent)
         } catch (_: Exception) {
+            try {
+                ContextCompat.startForegroundService(context, intent)
+            } catch (e: Exception) {
+                Log.w(TAG, "stopVpn failed: ${e.message}")
+            }
+        }
+    }
+
+    /** Reclaim residual system VPN after kill/update (prefer call from UI). */
+    fun cleanupVpn(context: Context) {
+        val intent = Intent(context, PullWireVpnService::class.java).apply {
+            action = PullWireVpnService.ACTION_CLEANUP
+        }
+        try {
             ContextCompat.startForegroundService(context, intent)
+        } catch (e: Exception) {
+            Log.w(TAG, "cleanupVpn failed: ${e.message}")
+            stopVpn(context)
         }
     }
 

@@ -339,6 +339,12 @@ class FloatBallService : Service(), PullWireController.Listener, LatencyProbe.Li
         LatencyProbe.removeListener(this)
         removeBall()
         Prefs.setFloatRunning(this, false)
+        // If process/service dies without explicit Stop, tear down VPN so
+        // Hearthstone is not left on a dead tunnel.
+        try {
+            PullWireController.stopVpn(this)
+        } catch (_: Exception) {
+        }
         super.onDestroy()
     }
 }

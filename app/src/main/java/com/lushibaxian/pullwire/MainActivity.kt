@@ -77,11 +77,14 @@ class MainActivity : AppCompatActivity() {
         }
 
         maybeRequestNotificationPermission()
+        // Repair dead-tunnel leftovers silently; UI shows stopped state via refreshUi.
+        ServiceRuntime.reconcile(this, "main_onCreate")
         refreshUi()
     }
 
     override fun onResume() {
         super.onResume()
+        ServiceRuntime.reconcile(this, "main_onResume")
         refreshUi()
         binding.tvLatency.text = getString(R.string.latency_measuring)
         LatencyProbe.refreshAsync { rtt -> updateLatencyUi(rtt) }
@@ -243,7 +246,14 @@ class MainActivity : AppCompatActivity() {
         val overlayOk = hasOverlay()
         val vpnOk = hasVpnConsent()
         val hsOk = isHsInstalled()
-        val running = Prefs.isFloatRunning(this)
+        // Only show "running" when prefs say so AND services are really alive.
+        val running = Prefs.isFloatRunning(this) &&
+            ServiceRuntime.isFloatAlive(this) &&
+            ServiceRuntime.isVpnAlive(this)
+        if (Prefs.isFloatRunning(this) && !running) {
+            // Prefs lag behind reality; keep UI honest even if reconcile races.
+            Prefs.clearRunningFlags(this)
+        }
 
         binding.tvAction.text = getString(
             if (running) R.string.action_stop else R.string.action_start

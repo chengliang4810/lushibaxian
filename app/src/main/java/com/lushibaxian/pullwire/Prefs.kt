@@ -52,4 +52,12 @@ object Prefs {
     fun setVpnRunning(context: Context, running: Boolean) {
         sp(context).edit().putBoolean("vpn_running", running).apply()
     }
+
+    /** Clear both runtime flags after crash / update / force-stop recovery. */
+    fun clearRunningFlags(context: Context) {
+        sp(context).edit()
+            .putBoolean("float_running", false)
+            .putBoolean("vpn_running", false)
+            .apply()
+    }
 }
