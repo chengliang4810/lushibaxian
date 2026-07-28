@@ -118,18 +118,16 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateLatencyUi(rttMs: Long) {
         if (!::binding.isInitialized) return
-        if (rttMs < 0) {
-            binding.tvLatency.text = getString(R.string.latency_unknown)
-            binding.tvLatency.setTextColor(ContextCompat.getColor(this, R.color.text_muted))
-        } else {
-            binding.tvLatency.text = getString(R.string.latency_value, rttMs.toInt())
-            val color = when {
-                rttMs < 80 -> R.color.signal_live
-                rttMs < 150 -> R.color.accent_copper
-                else -> R.color.signal_warn
-            }
-            binding.tvLatency.setTextColor(ContextCompat.getColor(this, color))
+        // Unknown → show 999ms in red (same as float ball fallback).
+        val display = if (rttMs < 0) 999 else rttMs.toInt().coerceAtMost(999)
+        binding.tvLatency.text = getString(R.string.latency_value, display)
+        val color = when {
+            rttMs < 0 -> R.color.latency_bad
+            display < 80 -> R.color.latency_good
+            display < 150 -> R.color.latency_mid
+            else -> R.color.latency_bad
         }
+        binding.tvLatency.setTextColor(ContextCompat.getColor(this, color))
     }
 
     private fun maybeRequestNotificationPermission() {
@@ -188,8 +186,16 @@ class MainActivity : AppCompatActivity() {
         Prefs.setFloatRunning(this, true)
         refreshUi()
 
-        launchHearthstone()
-        moveTaskToBack(true)
+        // Bring game to front if already running; otherwise cold-start it.
+        // Delay moveTaskToBack so we don't win a focus race against the game.
+        val brought = bringOrLaunchHearthstone()
+        if (!brought && !isHsInstalled()) {
+            // nothing to switch to
+            return
+        }
+        window.decorView.postDelayed({
+            if (!isFinishing) moveTaskToBack(true)
+        }, 350)
     }
 
     private fun stopService() {
@@ -203,15 +209,79 @@ class MainActivity : AppCompatActivity() {
         refreshUi()
     }
 
-    private fun launchHearthstone() {
+    /**
+     * If Hearthstone process is alive, bring its existing task to front.
+     * Otherwise cold-start the launcher activity.
+     * @return true if an intent was fired
+     */
+    private fun bringOrLaunchHearthstone(): Boolean {
+        if (!isHsInstalled()) return false
+
+        // 1) Prefer standard launcher intent (works for cold start + most warm resumes).
         val launch = packageManager.getLaunchIntentForPackage(Prefs.HS_PACKAGE)
-        if (launch != null) {
-            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            try {
-                startActivity(launch)
-            } catch (_: Exception) {
-                // ignore; service is already running
+            ?: Intent(Intent.ACTION_MAIN).apply {
+                addCategory(Intent.CATEGORY_LAUNCHER)
+                setPackage(Prefs.HS_PACKAGE)
             }
+
+        val running = isPackageProcessRunning(Prefs.HS_PACKAGE)
+        if (running) {
+            // Warm: reorder existing task to front without wiping game state.
+            launch.addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                    Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
+            )
+        } else {
+            // Cold start: behave like home launcher.
+            launch.addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
+            )
+        }
+
+        return try {
+            startActivity(launch)
+            true
+        } catch (_: Exception) {
+            // Fallback: explicit MAIN/LAUNCHER resolve
+            try {
+                val fallback = Intent(Intent.ACTION_MAIN).apply {
+                    addCategory(Intent.CATEGORY_LAUNCHER)
+                    setPackage(Prefs.HS_PACKAGE)
+                    addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED or
+                            Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+                    )
+                }
+                val ri = packageManager.resolveActivity(fallback, 0)
+                if (ri != null) {
+                    fallback.setClassName(ri.activityInfo.packageName, ri.activityInfo.name)
+                    startActivity(fallback)
+                    true
+                } else {
+                    false
+                }
+            } catch (_: Exception) {
+                false
+            }
+        }
+    }
+
+    private fun isPackageProcessRunning(packageName: String): Boolean {
+        return try {
+            val am = getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
+            @Suppress("DEPRECATION")
+            val procs = am.runningAppProcesses ?: return false
+            procs.any { proc ->
+                proc.processName == packageName ||
+                    proc.processName.startsWith("$packageName:") ||
+                    proc.pkgList?.contains(packageName) == true
+            }
+        } catch (_: Exception) {
+            false
         }
     }
 

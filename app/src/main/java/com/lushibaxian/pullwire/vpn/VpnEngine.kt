@@ -3,6 +3,7 @@ package com.lushibaxian.pullwire.vpn
 import android.net.VpnService
 import android.os.ParcelFileDescriptor
 import android.util.Log
+import com.lushibaxian.pullwire.PullWireFlags
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.net.InetAddress
@@ -42,7 +43,11 @@ class VpnEngine(
         private val CLIENT_IP: InetAddress = InetAddress.getByName("10.0.0.2")
     }
 
+    /** Legacy local flag; prefer [PullWireFlags.dropping] for hot path. */
     val dropping = AtomicBoolean(false)
+
+    private fun isDropping(): Boolean =
+        PullWireFlags.dropping.get() || dropping.get()
 
     private val running = AtomicBoolean(false)
     private val deadNotified = AtomicBoolean(false)
@@ -183,7 +188,7 @@ class VpnEngine(
                     continue
                 }
                 lastTunActivityMs.set(System.currentTimeMillis())
-                if (dropping.get()) {
+                if (isDropping()) {
                     continue
                 }
                 val buf = ByteBuffer.wrap(packet.copyOf(length)).order(ByteOrder.BIG_ENDIAN)
@@ -216,7 +221,7 @@ class VpnEngine(
     }
 
     private fun enqueueToTun(packet: ByteBuffer) {
-        if (!running.get() || dropping.get()) return
+        if (!running.get() || isDropping()) return
         if (!tunOutQueue.offer(packet)) {
             // Prefer dropping outbound-to-client under pressure over blocking.
             Log.w(TAG, "tun out queue full, drop")
@@ -582,8 +587,10 @@ class VpnEngine(
     }
 
     private fun sendRstToClient(session: TcpSession) {
-        if (dropping.get()) return
-        enqueueToTun(
+        // Always allow RST even while dropping so the game notices immediately.
+        if (!running.get()) return
+        // Bypass isDropping for RST control packets:
+        if (!tunOutQueue.offer(
             Packet.buildIp4Tcp(
                 src = session.key.dst,
                 dst = CLIENT_IP,
@@ -595,6 +602,9 @@ class VpnEngine(
                 window = 0
             )
         )
+        ) {
+            Log.w(TAG, "RST enqueue failed")
+        }
     }
 
     // ---------------- select loop ----------------
@@ -773,7 +783,7 @@ class VpnEngine(
             val payload = ByteArray(buf.remaining())
             buf.get(payload)
             session.lastActive = System.currentTimeMillis()
-            if (dropping.get()) return
+            if (isDropping()) return
             enqueueToTun(
                 Packet.buildIp4Udp(
                     src = udpKey.dst,
@@ -823,7 +833,7 @@ class VpnEngine(
             return
         }
         if (n < 0) {
-            if (!dropping.get()) {
+            if (!isDropping()) {
                 enqueueToTun(
                     Packet.buildIp4Tcp(
                         src = session.key.dst,
@@ -842,7 +852,7 @@ class VpnEngine(
             return
         }
         if (n == 0) return
-        if (dropping.get()) return
+        if (isDropping()) return
         session.readBuf.flip()
         val payload = ByteArray(session.readBuf.remaining())
         session.readBuf.get(payload)

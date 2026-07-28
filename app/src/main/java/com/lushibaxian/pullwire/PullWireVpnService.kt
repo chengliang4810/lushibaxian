@@ -55,7 +55,7 @@ class PullWireVpnService : VpnService() {
             if (!isRunning) return
             val eng = engine
             // Never rebuild mid pull-wire; dropping means intentional silence.
-            val pulling = eng?.dropping?.get() == true
+            val pulling = PullWireFlags.dropping.get()
             if (!pulling && (eng == null || !eng.isHealthy())) {
                 consecutiveHealthFails++
                 Log.w(TAG, "engine unhealthy ($consecutiveHealthFails/$HEALTH_FAIL_THRESHOLD)")
@@ -260,8 +260,11 @@ class PullWireVpnService : VpnService() {
 
     private fun doPull(durationMs: Long) {
         var eng = engine
+        // Drop is already armed in PullWireController.tryPull (hot path).
+        PullWireFlags.dropping.set(true)
+
         if (eng == null || !eng.isHealthy()) {
-            // Prefer worker-only recovery; do not bounce system VPN.
+            // Prefer worker-only recovery; do not bounce system VPN mid-match.
             rebuildEngineWorkers("before_pull")
             eng = engine
             if (eng == null || !eng.isHealthy()) {
@@ -272,6 +275,8 @@ class PullWireVpnService : VpnService() {
                 }
                 eng = engine
             }
+            // Re-arm after rebuild.
+            PullWireFlags.dropping.set(true)
         }
         if (eng == null) {
             PullWireController.onPullFailed(this, "隧道未启动")
@@ -279,31 +284,29 @@ class PullWireVpnService : VpnService() {
         }
 
         Log.i(TAG, "pull drop ${durationMs}ms")
-        // Drop traffic only. Do NOT mass-RST all sessions here:
-        // that alone can look like spontaneous full reconnects if mis-fired,
-        // and is heavier than needed for animation skip.
-        eng.dropping.set(true)
-        // Soft session clear (no RST flood): close NAT maps so next packets reopen.
-        eng.resetSessions(sendRst = false)
+        // Wi‑Fi TCP often needs an explicit RST; pure silence can take seconds
+        // before the game notices (user multi-taps and stacks reconnects).
+        eng.resetSessions(sendRst = true)
         updateNotification("拔线中… ${durationMs}ms")
 
-        // Cancel only previous pull end callback, keep health loop.
-        handler.removeCallbacksAndMessages(null)
+        // Keep health loop; only replace the pull-end callback.
+        handler.removeCallbacks(pullEndRunnable)
+        handler.postDelayed(pullEndRunnable, durationMs)
         startHealthLoop()
+    }
 
-        handler.postDelayed({
-            val current = engine
-            current?.dropping?.set(false)
-            updateNotification("炉石隧道运行中 · 点悬浮球拔线")
-            Log.i(TAG, "pull drop end, forwarding resumed")
-            PullWireController.onPullFinished(this)
-            // Do not auto-rebuild after every pull; only health loop handles death.
-        }, durationMs)
+    private val pullEndRunnable = Runnable {
+        PullWireFlags.dropping.set(false)
+        updateNotification("炉石隧道运行中 · 点悬浮球拔线")
+        Log.i(TAG, "pull drop end, forwarding resumed")
+        PullWireController.onPullFinished(this)
     }
 
     private fun shutdownAll() {
         handler.removeCallbacks(healthCheck)
+        handler.removeCallbacks(pullEndRunnable)
         handler.removeCallbacksAndMessages(null)
+        PullWireFlags.dropping.set(false)
         stopEngineWorkers()
         try {
             vpnInterface?.close()

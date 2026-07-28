@@ -59,7 +59,6 @@ object PullWireController {
         val intent = Intent(context, PullWireVpnService::class.java).apply {
             action = PullWireVpnService.ACTION_STOP
         }
-        // startService is enough for stop action; service may already be running.
         try {
             context.startService(intent)
         } catch (_: Exception) {
@@ -71,7 +70,6 @@ object PullWireController {
         }
     }
 
-    /** Reclaim residual system VPN after kill/update (prefer call from UI). */
     fun cleanupVpn(context: Context) {
         val intent = Intent(context, PullWireVpnService::class.java).apply {
             action = PullWireVpnService.ACTION_CLEANUP
@@ -85,51 +83,69 @@ object PullWireController {
     }
 
     /**
-     * @return null if accepted, otherwise a short reason string.
+     * @return null if accepted, otherwise a short reason (may be empty for silent ignore).
      */
     fun tryPull(context: Context): String? {
         val now = SystemClock.elapsedRealtime()
-        when (state) {
-            State.PULLING -> return "正在拔线中"
-            State.COOLDOWN -> {
-                val left = Prefs.COOLDOWN_MS - (now - lastPullAt)
-                if (left > 0) return "冷却中 ${left}ms"
+
+        // Absolute lock from first click — critical on Wi‑Fi where game may
+        // only show reconnect seconds later; multi-tap would stack storms.
+        if (lastPullAt > 0L && now - lastPullAt < Prefs.LOCKOUT_MS) {
+            return when (state) {
+                State.PULLING -> "正在拔线中"
+                State.COOLDOWN -> "请稍候"
+                State.IDLE -> "请稍候"
             }
-            State.IDLE -> Unit
         }
+        if (state == State.PULLING) return "正在拔线中"
 
         val duration = Prefs.nextDurationMs()
         state = State.PULLING
         lastPullAt = now
         notifyState(state)
-        Log.i(TAG, "pull start, duration=${duration}ms")
+
+        // Hot path: drop immediately, before service intent is delivered.
+        PullWireFlags.dropping.set(true)
+        Log.i(TAG, "pull start, duration=${duration}ms (drop armed immediately)")
 
         val intent = Intent(context, PullWireVpnService::class.java).apply {
             action = PullWireVpnService.ACTION_PULL
             putExtra(PullWireVpnService.EXTRA_DURATION_MS, duration)
         }
-        ContextCompat.startForegroundService(context, intent)
+        // Prefer startService if VPN FGS already running (avoids FGS start lag).
+        try {
+            context.startService(intent)
+        } catch (_: Exception) {
+            ContextCompat.startForegroundService(context, intent)
+        }
         return null
     }
 
     fun onPullFinished(context: Context) {
-        if (state != State.PULLING) return
+        if (state != State.PULLING) {
+            // Still clear drop if service finished late.
+            PullWireFlags.dropping.set(false)
+            return
+        }
         state = State.COOLDOWN
         notifyState(state)
         Log.i(TAG, "pull finished, enter cooldown")
 
         val app = context.applicationContext
+        val now = SystemClock.elapsedRealtime()
+        val remainLock = (Prefs.LOCKOUT_MS - (now - lastPullAt)).coerceAtLeast(0L)
         android.os.Handler(app.mainLooper).postDelayed({
             if (state == State.COOLDOWN) {
                 state = State.IDLE
                 notifyState(state)
                 Log.i(TAG, "cooldown done → IDLE")
             }
-        }, Prefs.COOLDOWN_MS)
+        }, remainLock)
     }
 
     fun onPullFailed(context: Context, reason: String) {
         Log.w(TAG, "pull failed: $reason")
+        PullWireFlags.dropping.set(false)
         state = State.IDLE
         notifyState(state)
     }

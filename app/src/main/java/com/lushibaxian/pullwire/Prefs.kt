@@ -8,12 +8,20 @@ object Prefs {
 
     const val HS_PACKAGE = "com.blizzard.wtcg.hearthstone.cn.baidu_sem_dev"
 
-    /** Fixed base pull duration. Each click jitters by ±JITTER_MS. */
-    const val BASE_DURATION_MS = 200L
-    const val JITTER_MS = 50L
-    const val MIN_DURATION_MS = BASE_DURATION_MS - JITTER_MS // 150
-    const val MAX_DURATION_MS = BASE_DURATION_MS + JITTER_MS // 250
-    const val COOLDOWN_MS = 2500L
+    /**
+     * Drop window. Cellular often reacts to ~200ms silence; Wi‑Fi TCP can
+     * retransmit longer, so we keep a slightly longer base + RST on pull.
+     */
+    const val BASE_DURATION_MS = 450L
+    const val JITTER_MS = 80L
+    const val MIN_DURATION_MS = BASE_DURATION_MS - JITTER_MS // 370
+    const val MAX_DURATION_MS = BASE_DURATION_MS + JITTER_MS // 530
+
+    /**
+     * Absolute lock from the moment user clicks pull: ignore further clicks
+     * so multi-tap does not stack into a reconnect storm on slow Wi‑Fi notice.
+     */
+    const val LOCKOUT_MS = 4500L
 
     private fun sp(context: Context) =
         context.getSharedPreferences(NAME, Context.MODE_PRIVATE)

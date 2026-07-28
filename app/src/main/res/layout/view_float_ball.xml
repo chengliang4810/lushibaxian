@@ -19,7 +19,7 @@
             android:layout_height="wrap_content"
             android:includeFontPadding="false"
             android:text="@string/float_ball_label"
-            android:textColor="@color/white"
+            android:textColor="@color/ball_label"
             android:textSize="15sp"
             android:textStyle="bold" />
 
@@ -30,8 +30,8 @@
             android:layout_marginTop="1dp"
             android:fontFamily="monospace"
             android:includeFontPadding="false"
-            android:text="— ms"
-            android:textColor="#EEFFFFFF"
+            android:text="999ms"
+            android:textColor="@color/latency_bad"
             android:textSize="9sp"
             android:textStyle="bold" />
     </LinearLayout>

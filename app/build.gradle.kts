@@ -12,8 +12,8 @@ android {
         applicationId = "com.lushibaxian.pullwire"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.1.3"
+        versionCode = 8
+        versionName = "0.1.7"
     }
 
     buildTypes {

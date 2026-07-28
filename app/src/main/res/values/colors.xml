@@ -12,6 +12,10 @@
     <color name="accent_copper_dim">#8A6A3A</color>
     <color name="signal_live">#3DDC97</color>
     <color name="signal_live_dim">#1F6B4A</color>
+    <!-- Latency: green / yellow / red (game-style) -->
+    <color name="latency_good">#3DDC97</color>
+    <color name="latency_mid">#F5C542</color>
+    <color name="latency_bad">#FF5252</color>
     <color name="signal_warn">#E8A54B</color>
     <color name="signal_off">#4A5564</color>
     <color name="btn_start">#D4A15A</color>
@@ -20,13 +24,15 @@
     <color name="btn_stop_text">#E8EDF5</color>
     <color name="btn_ghost_stroke">#3A4658</color>
 
-    <!-- Legacy / float ball -->
+    <!-- Legacy / float ball: dark base so latency green/copper/warn stay readable -->
     <color name="primary">#141A22</color>
     <color name="primary_dark">#0B0F14</color>
     <color name="accent">#D4A15A</color>
-    <color name="ball_idle">#D4A15A</color>
-    <color name="ball_pulling">#E05A4F</color>
-    <color name="ball_cooldown">#4A5564</color>
+    <color name="ball_idle">#1E2A3C</color>
+    <color name="ball_pulling">#6E2420</color>
+    <color name="ball_cooldown">#2A3340</color>
+    <color name="ball_label">#F2F5FA</color>
+    <color name="ball_latency_unknown">#FF5252</color>
     <color name="white">#FFFFFF</color>
     <color name="bg">#0B0F14</color>
     <color name="ok">#3DDC97</color>

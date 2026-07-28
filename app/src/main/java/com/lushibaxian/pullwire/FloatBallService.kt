@@ -204,12 +204,18 @@ class FloatBallService : Service(), PullWireController.Listener, LatencyProbe.Li
     }
 
     private fun onBallClick() {
+        // Immediate visual feedback even before service handles RST.
+        applyState(PullWireController.State.PULLING)
         val err = PullWireController.tryPull(this)
         if (err != null) {
-            Toast.makeText(this, err, Toast.LENGTH_SHORT).show()
-        } else {
-            Toast.makeText(this, "拔线中…", Toast.LENGTH_SHORT).show()
+            // Restore real state if rejected (lockout / already pulling).
+            applyState(PullWireController.state)
+            // Silent for "请稍候" multi-tap; toast only for clear errors.
+            if (err != "请稍候" && err != "正在拔线中") {
+                Toast.makeText(this, err, Toast.LENGTH_SHORT).show()
+            }
         }
+        // No toast on success — ball turning red is enough; toast stacks on multi-tap.
     }
 
     private fun removeBall() {
@@ -236,18 +242,16 @@ class FloatBallService : Service(), PullWireController.Listener, LatencyProbe.Li
 
     private fun renderLatency(rttMs: Long) {
         val tv = ballLatency ?: return
-        if (rttMs < 0) {
-            tv.text = "— ms"
-            tv.setTextColor(ContextCompat.getColor(this, R.color.white))
-            tv.alpha = 0.7f
-            return
-        }
+        // Unknown / failed probe: show 999ms fallback (never "— ms").
+        val display = if (rttMs < 0) 999L else rttMs.coerceAtMost(999L)
         tv.alpha = 1f
-        tv.text = "${rttMs}ms"
+        tv.text = "${display}ms"
+        // Game-style: green / yellow / red
         val colorRes = when {
-            rttMs < 80 -> R.color.signal_live
-            rttMs < 150 -> R.color.accent_copper
-            else -> R.color.signal_warn
+            rttMs < 0 -> R.color.latency_bad
+            display < 80 -> R.color.latency_good
+            display < 150 -> R.color.latency_mid
+            else -> R.color.latency_bad
         }
         tv.setTextColor(ContextCompat.getColor(this, colorRes))
     }
@@ -265,18 +269,35 @@ class FloatBallService : Service(), PullWireController.Listener, LatencyProbe.Li
             PullWireController.State.COOLDOWN -> "…"
         }
         tv.text = label
+        tv.setTextColor(ContextCompat.getColor(this, R.color.ball_label))
 
         val target = ballRoot ?: tv
         val bg = target.background
         if (bg is GradientDrawable) {
+            bg.mutate()
             bg.setColor(ContextCompat.getColor(this, colorRes))
+            // Keep copper ring so dark ball stays visible on dark game UI.
+            bg.setStroke(
+                (1.5f * resources.displayMetrics.density).toInt().coerceAtLeast(2),
+                ContextCompat.getColor(this, R.color.accent_copper)
+            )
         } else {
             (target.background?.mutate() as? GradientDrawable)
-                ?.setColor(ContextCompat.getColor(this, colorRes))
+                ?.apply {
+                    setColor(ContextCompat.getColor(this@FloatBallService, colorRes))
+                    setStroke(
+                        (1.5f * resources.displayMetrics.density).toInt().coerceAtLeast(2),
+                        ContextCompat.getColor(this@FloatBallService, R.color.accent_copper)
+                    )
+                }
                 ?: run {
                     val d = GradientDrawable().apply {
                         shape = GradientDrawable.OVAL
                         setColor(ContextCompat.getColor(this@FloatBallService, colorRes))
+                        setStroke(
+                            (1.5f * resources.displayMetrics.density).toInt().coerceAtLeast(2),
+                            ContextCompat.getColor(this@FloatBallService, R.color.accent_copper)
+                        )
                     }
                     target.background = d
                 }
