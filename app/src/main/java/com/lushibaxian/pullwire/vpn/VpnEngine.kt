@@ -63,9 +63,24 @@ class VpnEngine(
         private const val POOL_HIGH_WATERMARK = 64
         /** Full stack for UDP open fails at most once per this window. */
         private const val UDP_OPEN_FAIL_LOG_INTERVAL_MS = 30_000L
+        /**
+         * Hearthstone Pegasus game-server TCP port (client→server).
+         * CN client logs show only :3724 for game servers.
+         *
+         * Do NOT include 1119 — that is a classic Battle.net port; treating it
+         * as "game" RST'd the login WebSocket and caused FATAL Bnet on every pull.
+         * BattleNet / HTTPS (443 etc.) must stay open across pull-wire.
+         */
+        private val GAME_TCP_PORTS = intArrayOf(3724)
         private val CLIENT_IP: Int = Packet.packInetAddress(
             java.net.InetAddress.getByName("10.0.0.2")
         )
+
+        /** True if [port] is a Hearthstone game-server port (not BattleNet). */
+        fun isGameTcpPort(port: Int): Boolean {
+            for (p in GAME_TCP_PORTS) if (p == port) return true
+            return false
+        }
     }
 
     private val lastUdpOpenFailLogMs = AtomicLong(0L)
@@ -120,6 +135,8 @@ class VpnEngine(
         data class Udp(val key: UdpKey) : CloseOp()
         data class Tcp(val key: TcpKey, val sendRst: Boolean) : CloseOp()
         data class ResetAll(val sendRst: Boolean) : CloseOp()
+        /** Close only game-server sessions; leave BattleNet / other TCP alone. */
+        data class ResetGame(val sendRst: Boolean) : CloseOp()
     }
 
     fun start() {
@@ -173,17 +190,33 @@ class VpnEngine(
 
     /**
      * Queue a full session reset on the select thread (safe).
-     * Call at pull start (and optionally end) so Hearthstone reconnects cleanly.
+     * Use after real network handoff when all sockets may be dead.
+     * Prefer [resetGameSessions] for intentional pull-wire.
      */
     fun resetSessions(sendRst: Boolean = true) {
         closeQueue.offer(CloseOp.ResetAll(sendRst))
-        // Also drop any pending TUN writes from old sessions.
+        // Drop pending TUN writes from old sessions (all may be stale).
         tunOutQueue.clear()
         try {
             selector.wakeup()
         } catch (_: Exception) {
         }
         Log.i(TAG, "sessions reset queued (sendRst=$sendRst)")
+    }
+
+    /**
+     * Pull-wire only: RST/close Hearthstone **game** TCP sessions (port 3724).
+     * BattleNet WebSocket and other traffic stay open so post-match login is not
+     * forced into FATAL `ERROR_SDK_SOCKET_CLOSED` / `ERROR_SDK_TASK_CANCELLED`.
+     */
+    fun resetGameSessions(sendRst: Boolean = true) {
+        closeQueue.offer(CloseOp.ResetGame(sendRst))
+        // Do NOT clear tunOutQueue — BattleNet replies may already be queued.
+        try {
+            selector.wakeup()
+        } catch (_: Exception) {
+        }
+        Log.i(TAG, "game sessions reset queued (sendRst=$sendRst)")
     }
 
     private fun thread(name: String, block: () -> Unit): Thread =
@@ -232,13 +265,16 @@ class VpnEngine(
                     continue
                 }
                 lastTunActivityMs.set(System.currentTimeMillis())
-                // Pure blackhole while pulling. Do not partially forward SYN:
-                // half-open reconnects during the window often stuck as
-                // permanent "正在重新连接" after the drop ends.
-                if (isDropping()) continue
                 parseBuf.clear()
                 parseBuf.put(packet, 0, length)
                 parseBuf.flip()
+                // While pulling: blackhole only game-server traffic. BattleNet
+                // and other sockets keep flowing so login survives the pull.
+                if (isDropping()) {
+                    val ip = Packet.parseIp4(parseBuf)
+                    if (ip != null && isGameBoundFromClient(parseBuf, ip)) continue
+                    parseBuf.rewind()
+                }
                 handleTunPacket(parseBuf)
             }
         } catch (e: Exception) {
@@ -277,7 +313,10 @@ class VpnEngine(
     }
 
     private fun enqueueToTun(packet: ByteBuffer) {
-        if (!running.get() || isDropping()) {
+        // Selective blackhole is applied at the game-session sources
+        // (tun-read for client→game, readTcp for game→client). Do not drop
+        // all outbound here — that used to kill BattleNet during pull.
+        if (!running.get()) {
             recycleBuild(packet)
             return
         }
@@ -295,6 +334,13 @@ class VpnEngine(
             Packet.PROTO_TCP -> handleTcpFromTun(buf, ip)
             else -> Unit
         }
+    }
+
+    /** Client→server packet destined to a game-server TCP port. */
+    private fun isGameBoundFromClient(buf: ByteBuffer, ip: Packet.Ip4): Boolean {
+        if (ip.protocol != Packet.PROTO_TCP) return false
+        val tcp = Packet.parseTcp(buf, ip) ?: return false
+        return isGameTcpPort(tcp.destPort)
     }
 
     // ---------------- UDP ----------------
@@ -798,6 +844,7 @@ class VpnEngine(
                 is CloseOp.Udp -> closeUdpNow(op.key)
                 is CloseOp.Tcp -> closeTcpNow(op.key, op.sendRst)
                 is CloseOp.ResetAll -> closeAllSessionsNow(op.sendRst)
+                is CloseOp.ResetGame -> closeGameSessionsNow(op.sendRst)
             }
         }
     }
@@ -831,6 +878,36 @@ class VpnEngine(
         Log.i(TAG, "all sessions closed (sendRst=$sendRst)")
     }
 
+    /**
+     * Close only TCP sessions whose remote port is a game-server port.
+     * Leaves BattleNet / HTTPS / UDP sessions intact.
+     */
+    private fun closeGameSessionsNow(sendRst: Boolean) {
+        val gameKeys = ArrayList<TcpKey>()
+        tcpSessions.forEach { (k, _) ->
+            if (isGameTcpPort(k.dstPort)) gameKeys.add(k)
+        }
+        var closed = 0
+        val ports = StringBuilder()
+        for (key in gameKeys) {
+            val s = tcpSessions.remove(key) ?: continue
+            if (sendRst) sendRstToClient(s)
+            try {
+                s.channel.keyFor(selector)?.cancel()
+            } catch (_: Exception) {
+            }
+            s.closeQuietly()
+            closed++
+            if (ports.isNotEmpty()) ports.append(',')
+            ports.append(Packet.formatIp(key.dst)).append(':').append(key.dstPort)
+        }
+        try {
+            selector.selectNow()
+        } catch (_: Exception) {
+        }
+        Log.i(TAG, "game sessions closed count=$closed sendRst=$sendRst targets=[$ports]")
+    }
+
     private fun closeUdpNow(key: UdpKey) {
         val s = udpSessions.remove(key) ?: return
         try {
@@ -861,7 +938,7 @@ class VpnEngine(
             buf.flip()
             val payloadLen = buf.remaining()
             session.lastActive = System.currentTimeMillis()
-            if (isDropping()) return
+            // Pull only targets game TCP; keep UDP (DNS etc.) flowing for BattleNet.
             buf.get(session.readScratch, 0, payloadLen)
             val out = borrowBuild()
             Packet.buildIp4Udp(
@@ -918,7 +995,10 @@ class VpnEngine(
             return
         }
         if (n < 0) {
-            if (!isDropping()) {
+            // During pull, suppress FIN to client only for game sessions so
+            // BattleNet half-close still reaches the game cleanly.
+            val suppressFin = isDropping() && isGameTcpPort(session.key.dstPort)
+            if (!suppressFin) {
                 enqueueClientTcp(session, flags = 0x11)
                 session.mySeq = (session.mySeq + 1) and 0xFFFFFFFFL
             }
@@ -926,7 +1006,8 @@ class VpnEngine(
             return
         }
         if (n == 0) return
-        if (isDropping()) return
+        // Blackhole only game-server → client during pull.
+        if (isDropping() && isGameTcpPort(session.key.dstPort)) return
         session.readBuf.flip()
         val payloadLen = session.readBuf.remaining()
         session.readBuf.get(session.readScratch, 0, payloadLen)

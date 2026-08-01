@@ -595,10 +595,9 @@ class PullWireVpnService : VpnService() {
         }
 
         Log.i(TAG, "pull drop ${durationMs}ms")
-        // Close NAT sessions once at pull start (with RST so game notices).
-        // During the window: pure blackhole. At end: only lift the blackhole
-        // and keep the engine — do not RST again or the reconnect itself dies.
-        eng.resetSessions(sendRst = true)
+        // Only RST/blackhole Hearthstone game TCP (3724). Leaving BattleNet
+        // open avoids FATAL login failures after a pull (1119 is Bnet, not game).
+        eng.resetGameSessions(sendRst = true)
         updateNotification("拔线中… ${durationMs}ms")
 
         handler.removeCallbacks(pullEndRunnable)

@@ -80,6 +80,15 @@ class PacketTest {
         assertFalse(Packet.isBroadcastOrMulticast(packed("223.5.5.5")))
     }
 
+    @Test fun gameTcpPortsRecognized() {
+        assertTrue(VpnEngine.isGameTcpPort(3724))
+        // 1119 is classic Battle.net — must NOT be treated as game.
+        assertFalse(VpnEngine.isGameTcpPort(1119))
+        assertFalse(VpnEngine.isGameTcpPort(443))
+        assertFalse(VpnEngine.isGameTcpPort(80))
+        assertFalse(VpnEngine.isGameTcpPort(53))
+    }
+
     @Test fun buildUdpHasValidChecksumsAndParsesBack() {
         val src = Packet.packInetAddress(InetAddress.getByName("93.184.216.34"))
         val dst = Packet.packInetAddress(InetAddress.getByName("10.0.0.2"))
