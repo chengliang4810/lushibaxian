@@ -105,7 +105,7 @@ object PullWireController {
         notifyState(state)
 
         // Hot path: drop immediately, before service intent is delivered.
-        PullWireFlags.dropping.set(true)
+        PullWireFlags.armDrop()
         Log.i(TAG, "pull start, duration=${duration}ms (drop armed immediately)")
 
         val intent = Intent(context, PullWireVpnService::class.java).apply {
@@ -124,7 +124,7 @@ object PullWireController {
     fun onPullFinished(context: Context) {
         if (state != State.PULLING) {
             // Still clear drop if service finished late.
-            PullWireFlags.dropping.set(false)
+            PullWireFlags.clearDrop()
             return
         }
         state = State.COOLDOWN
@@ -145,7 +145,7 @@ object PullWireController {
 
     fun onPullFailed(context: Context, reason: String) {
         Log.w(TAG, "pull failed: $reason")
-        PullWireFlags.dropping.set(false)
+        PullWireFlags.clearDrop()
         state = State.IDLE
         notifyState(state)
     }

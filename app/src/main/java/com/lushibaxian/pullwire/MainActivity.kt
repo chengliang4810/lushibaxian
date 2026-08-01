@@ -29,6 +29,9 @@ class MainActivity : AppCompatActivity() {
     /** After VPN consent returns OK, continue start + launch game. */
     private var pendingStartAfterVpn = false
 
+    /** After returning from overlay settings, continue start if still needed. */
+    private var pendingStartAfterOverlay = false
+
     private val latencyTicker = object : Runnable {
         override fun run() {
             LatencyProbe.refreshAsync { rtt -> updateLatencyUi(rtt) }
@@ -42,7 +45,8 @@ class MainActivity : AppCompatActivity() {
         if (result.resultCode == RESULT_OK) {
             if (pendingStartAfterVpn) {
                 pendingStartAfterVpn = false
-                startAndLaunchGame()
+                // Stay on this screen until all gates pass; then open game.
+                tryStart()
             }
         } else {
             pendingStartAfterVpn = false
@@ -90,6 +94,12 @@ class MainActivity : AppCompatActivity() {
         LatencyProbe.refreshAsync { rtt -> updateLatencyUi(rtt) }
         uiHandler.removeCallbacks(latencyTicker)
         uiHandler.postDelayed(latencyTicker, LatencyProbe.INTERVAL_MS)
+
+        // User may have just granted overlay in system settings.
+        if (pendingStartAfterOverlay && hasOverlay()) {
+            pendingStartAfterOverlay = false
+            tryStart()
+        }
     }
 
     override fun onPause() {
@@ -160,22 +170,29 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun tryStart() {
+        // Gate: stay on this screen until permissions are ready.
         if (!hasOverlay()) {
             Toast.makeText(this, R.string.toast_need_overlay, Toast.LENGTH_SHORT).show()
+            pendingStartAfterOverlay = true
+            pendingStartAfterVpn = false
             requestOverlay()
             return
         }
         if (!hasVpnConsent()) {
             Toast.makeText(this, R.string.toast_need_vpn, Toast.LENGTH_SHORT).show()
+            pendingStartAfterOverlay = false
             requestVpn(startAfter = true)
             return
         }
+        pendingStartAfterOverlay = false
+        pendingStartAfterVpn = false
         startAndLaunchGame()
     }
 
     private fun startAndLaunchGame() {
         if (!isHsInstalled()) {
-            Toast.makeText(this, R.string.toast_game_missing, Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, R.string.toast_game_missing, Toast.LENGTH_LONG).show()
+            // Still start tunnel/float so user can open game manually.
         }
 
         PullWireController.startVpn(this)
@@ -186,16 +203,35 @@ class MainActivity : AppCompatActivity() {
         Prefs.setFloatRunning(this, true)
         refreshUi()
 
-        // Bring game to front if already running; otherwise cold-start it.
-        // Delay moveTaskToBack so we don't win a focus race against the game.
-        val brought = bringOrLaunchHearthstone()
-        if (!brought && !isHsInstalled()) {
-            // nothing to switch to
+        // Do NOT moveTaskToBack before the game is actually opened.
+        // Xiaomi/MIUI may show "允许打开炉石" — if we background ourselves,
+        // the dialog is dismissed and launch fails.
+        if (!isHsInstalled()) return
+
+        val launched = bringOrLaunchHearthstone()
+        if (!launched) {
+            Toast.makeText(this, R.string.toast_open_game_failed, Toast.LENGTH_LONG).show()
             return
         }
+
+        // If after a short wait we still have focus, the game (or its launch
+        // permission dialog) did not come to the foreground — the system likely
+        // blocked the background start. Stay here and tell the user.
+        //
+        // We deliberately do NOT use ActivityManager.getRunningAppProcesses to
+        // detect Hearthstone: since API 21 it only reports the caller's own
+        // process, so it always returns false for another app and would make us
+        // wrongly conclude the game never launched.
         window.decorView.postDelayed({
-            if (!isFinishing) moveTaskToBack(true)
-        }, 350)
+            if (isFinishing) return@postDelayed
+            if (hasWindowFocus()) {
+                Toast.makeText(this, R.string.toast_open_game_blocked, Toast.LENGTH_LONG).show()
+                // Stay on this activity so user can grant permission / retry.
+                return@postDelayed
+            }
+            // Game (or its permission dialog) took over the foreground — leave.
+            moveTaskToBack(true)
+        }, 1200)
     }
 
     private fun stopService() {
@@ -210,36 +246,30 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * If Hearthstone process is alive, bring its existing task to front.
-     * Otherwise cold-start the launcher activity.
+     * Launch (or resume) Hearthstone.
+     *
+     * We do NOT probe whether the game process is already running:
+     * [android.app.ActivityManager.getRunningAppProcesses] only reports the
+     * caller's own process since API 21, so it cannot reliably detect another
+     * app. Instead we always fire the launcher intent with flags that do the
+     * right thing in both cases — cold start creates the task; warm resume
+     * reorders the existing task to front without wiping game state.
      * @return true if an intent was fired
      */
     private fun bringOrLaunchHearthstone(): Boolean {
         if (!isHsInstalled()) return false
 
-        // 1) Prefer standard launcher intent (works for cold start + most warm resumes).
         val launch = packageManager.getLaunchIntentForPackage(Prefs.HS_PACKAGE)
             ?: Intent(Intent.ACTION_MAIN).apply {
                 addCategory(Intent.CATEGORY_LAUNCHER)
                 setPackage(Prefs.HS_PACKAGE)
             }
-
-        val running = isPackageProcessRunning(Prefs.HS_PACKAGE)
-        if (running) {
-            // Warm: reorder existing task to front without wiping game state.
-            launch.addFlags(
-                Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
-                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
-                    Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
-            )
-        } else {
-            // Cold start: behave like home launcher.
-            launch.addFlags(
-                Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
-            )
-        }
+        launch.addFlags(
+            Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
+        )
 
         return try {
             startActivity(launch)
@@ -270,27 +300,13 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun isPackageProcessRunning(packageName: String): Boolean {
-        return try {
-            val am = getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
-            @Suppress("DEPRECATION")
-            val procs = am.runningAppProcesses ?: return false
-            procs.any { proc ->
-                proc.processName == packageName ||
-                    proc.processName.startsWith("$packageName:") ||
-                    proc.pkgList?.contains(packageName) == true
-            }
-        } catch (_: Exception) {
-            false
-        }
-    }
-
     private fun requestOverlay() {
         val intent = Intent(
             Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
             Uri.parse("package:$packageName")
         )
         startActivity(intent)
+        // Stay in our task; onResume will continue start if granted.
     }
 
     private fun requestVpn(startAfter: Boolean) {
@@ -298,9 +314,10 @@ class MainActivity : AppCompatActivity() {
         val prepare = VpnService.prepare(this)
         if (prepare == null) {
             pendingStartAfterVpn = false
-            if (startAfter) startAndLaunchGame()
+            if (startAfter) tryStart()
             refreshUi()
         } else {
+            // System VPN consent activity — we stay underneath until result.
             vpnPermissionLauncher.launch(prepare)
         }
     }

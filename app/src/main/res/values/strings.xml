@@ -26,6 +26,8 @@
     <string name="toast_started">已启动</string>
     <string name="toast_stopped">已停止</string>
     <string name="toast_vpn_denied">未授权，无法启动</string>
+    <string name="toast_open_game_failed">无法打开炉石传说，请手动进入游戏</string>
+    <string name="toast_open_game_blocked">系统拦截了打开炉石，请在权限中允许「后台弹出界面」后重试</string>
     <string name="notification_channel_name">运行服务</string>
     <string name="notification_channel_desc">保持悬浮球与网络服务运行</string>
     <string name="notification_title">炉石拔线运行中</string>

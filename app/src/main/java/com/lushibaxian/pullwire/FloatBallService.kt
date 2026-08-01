@@ -42,6 +42,15 @@ class FloatBallService : Service(), PullWireController.Listener, LatencyProbe.Li
         private const val NOTIF_ID = 1002
         private const val CLICK_SLOP_DP = 8f
         private const val CLICK_MAX_MS = 400L
+
+        /**
+         * Reliable liveness flag for this service (set by onCreate/onDestroy).
+         * [ActivityManager.getRunningServices] is deprecated and only returns the
+         * caller's own services since API 26; we avoid relying on it.
+         */
+        @Volatile
+        var isRunning: Boolean = false
+            private set
     }
 
     private lateinit var windowManager: WindowManager
@@ -63,6 +72,7 @@ class FloatBallService : Service(), PullWireController.Listener, LatencyProbe.Li
 
     override fun onCreate() {
         super.onCreate()
+        isRunning = true
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         PullWireController.addListener(this)
         LatencyProbe.addListener(this)
@@ -360,6 +370,7 @@ class FloatBallService : Service(), PullWireController.Listener, LatencyProbe.Li
         LatencyProbe.removeListener(this)
         removeBall()
         Prefs.setFloatRunning(this, false)
+        isRunning = false
         // If process/service dies without explicit Stop, tear down VPN so
         // Hearthstone is not left on a dead tunnel.
         try {

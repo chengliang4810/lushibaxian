@@ -12,8 +12,8 @@ android {
         applicationId = "com.lushibaxian.pullwire"
         minSdk = 26
         targetSdk = 35
-        versionCode = 8
-        versionName = "0.1.7"
+        versionCode = 14
+        versionName = "0.2.3"
     }
 
     buildTypes {
@@ -24,8 +24,10 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             isDebuggable = false
+            // Use non-optimize defaults so android.util.Log is NOT stripped —
+            // post-match network bugs are undiagnosable without I/W/E logs.
             proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
+                getDefaultProguardFile("proguard-android.txt"),
                 "proguard-rules.pro"
             )
             signingConfig = signingConfigs.getByName("debug")
@@ -52,4 +54,6 @@ dependencies {
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.constraintlayout:constraintlayout:2.2.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+
+    testImplementation("junit:junit:4.13.2")
 }

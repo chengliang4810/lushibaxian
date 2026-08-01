@@ -6,6 +6,13 @@ import java.nio.ByteOrder
 
 /**
  * Minimal IPv4 packet helpers for TUN userspace NAT.
+ *
+ * Performance note: addresses are carried as packed [Int] (network order in the
+ * high/low bits — see [packInetAddress] / [inetAddress]) rather than
+ * [InetAddress]. The NAT hot path parses thousands of packets/second; allocating
+ * two `InetAddress` objects (with internal validation + byte-array copies) per
+ * packet, and hashing them as session-map keys, shows up as steady GC churn and
+ * map lookup overhead. [Int] is a primitive: no allocation, cheap equals/hash.
  */
 object Packet {
     const val IP4_HEADER_SIZE = 20
@@ -21,8 +28,8 @@ object Packet {
         val headerLength: Int,
         val totalLength: Int,
         val protocol: Int,
-        val source: InetAddress,
-        val destination: InetAddress,
+        val source: Int,
+        val destination: Int,
         val payloadOffset: Int,
         val payloadLength: Int
     )
@@ -64,19 +71,15 @@ object Packet {
         val totalLength = buf.getShort(pos + 2).toInt() and 0xFFFF
         if (totalLength < ihl || totalLength > buf.remaining()) return null
         val protocol = buf.get(pos + 9).toInt() and 0xFF
-        val src = ByteArray(4)
-        val dst = ByteArray(4)
-        buf.position(pos + 12)
-        buf.get(src)
-        buf.get(dst)
-        buf.position(pos)
+        val src = buf.getInt(pos + 12)
+        val dst = buf.getInt(pos + 16)
         return Ip4(
             version = version,
             headerLength = ihl,
             totalLength = totalLength,
             protocol = protocol,
-            source = InetAddress.getByAddress(src),
-            destination = InetAddress.getByAddress(dst),
+            source = src,
+            destination = dst,
             payloadOffset = pos + ihl,
             payloadLength = totalLength - ihl
         )
@@ -123,18 +126,23 @@ object Packet {
         )
     }
 
+    /**
+     * Build an IPv4/UDP packet. [src]/[dst] are packed addresses ([packInetAddress]).
+     * Writes into [buf] at [buf.position()] and flips, leaving [buf] ready to read.
+     */
     fun buildIp4Udp(
-        src: InetAddress,
-        dst: InetAddress,
+        buf: ByteBuffer,
+        src: Int,
+        dst: Int,
         srcPort: Int,
         dstPort: Int,
         payload: ByteArray,
         payloadOffset: Int = 0,
         payloadLength: Int = payload.size
-    ): ByteBuffer {
+    ) {
         val udpLen = UDP_HEADER_SIZE + payloadLength
         val total = IP4_HEADER_SIZE + udpLen
-        val buf = ByteBuffer.allocate(total).order(ByteOrder.BIG_ENDIAN)
+        buf.clear()
         // IP
         buf.put(0x45.toByte())
         buf.put(0)
@@ -144,8 +152,8 @@ object Packet {
         buf.put(64.toByte()) // ttl
         buf.put(PROTO_UDP.toByte())
         buf.putShort(0) // checksum placeholder
-        buf.put(src.address)
-        buf.put(dst.address)
+        buf.putInt(src)
+        buf.putInt(dst)
         // UDP
         buf.putShort(srcPort.toShort())
         buf.putShort(dstPort.toShort())
@@ -156,12 +164,12 @@ object Packet {
         }
         buf.flip()
         writeIpChecksum(buf)
-        return buf
     }
 
     fun buildIp4Tcp(
-        src: InetAddress,
-        dst: InetAddress,
+        buf: ByteBuffer,
+        src: Int,
+        dst: Int,
         srcPort: Int,
         dstPort: Int,
         seq: Long,
@@ -171,10 +179,10 @@ object Packet {
         payload: ByteArray? = null,
         payloadOffset: Int = 0,
         payloadLength: Int = payload?.size ?: 0
-    ): ByteBuffer {
+    ) {
         val tcpLen = TCP_HEADER_SIZE + payloadLength
         val total = IP4_HEADER_SIZE + tcpLen
-        val buf = ByteBuffer.allocate(total).order(ByteOrder.BIG_ENDIAN)
+        buf.clear()
         buf.put(0x45.toByte())
         buf.put(0)
         buf.putShort(total.toShort())
@@ -183,8 +191,8 @@ object Packet {
         buf.put(64.toByte())
         buf.put(PROTO_TCP.toByte())
         buf.putShort(0)
-        buf.put(src.address)
-        buf.put(dst.address)
+        buf.putInt(src)
+        buf.putInt(dst)
         // TCP
         buf.putShort(srcPort.toShort())
         buf.putShort(dstPort.toShort())
@@ -201,7 +209,6 @@ object Packet {
         buf.flip()
         writeIpChecksum(buf)
         writeTcpChecksum(buf, src, dst, tcpLen)
-        return buf
     }
 
     private fun writeIpChecksum(buf: ByteBuffer) {
@@ -218,19 +225,17 @@ object Packet {
 
     private fun writeTcpChecksum(
         buf: ByteBuffer,
-        src: InetAddress,
-        dst: InetAddress,
+        src: Int,
+        dst: Int,
         tcpLength: Int
     ) {
         buf.putShort(IP4_HEADER_SIZE + 16, 0)
         var sum = 0
-        // pseudo header
-        val s = src.address
-        val d = dst.address
-        sum += ((s[0].toInt() and 0xFF) shl 8) or (s[1].toInt() and 0xFF)
-        sum += ((s[2].toInt() and 0xFF) shl 8) or (s[3].toInt() and 0xFF)
-        sum += ((d[0].toInt() and 0xFF) shl 8) or (d[1].toInt() and 0xFF)
-        sum += ((d[2].toInt() and 0xFF) shl 8) or (d[3].toInt() and 0xFF)
+        // pseudo header (packed addresses → two 16-bit words each)
+        sum += (src ushr 16) and 0xFFFF
+        sum += src and 0xFFFF
+        sum += (dst ushr 16) and 0xFFFF
+        sum += dst and 0xFFFF
         sum += PROTO_TCP
         sum += tcpLength
         val start = IP4_HEADER_SIZE
@@ -249,12 +254,49 @@ object Packet {
         buf.putShort(IP4_HEADER_SIZE + 16, (sum.inv() and 0xFFFF).toShort())
     }
 
-    fun copyPayload(buf: ByteBuffer, offset: Int, length: Int): ByteArray {
-        val out = ByteArray(length)
+    /**
+     * Copy [length] bytes from [buf] starting at [offset] into [out] at [outPos].
+     * Restores the buffer's position afterwards. No allocation.
+     */
+    fun copyPayload(buf: ByteBuffer, offset: Int, length: Int, out: ByteArray, outPos: Int = 0) {
         val p = buf.position()
         buf.position(offset)
-        buf.get(out, 0, length)
+        buf.get(out, outPos, length)
         buf.position(p)
-        return out
+    }
+
+    /** Pack an IPv4 [InetAddress] (4 bytes) into a 32-bit int. */
+    fun packInetAddress(addr: InetAddress): Int {
+        val b = addr.address
+        return ((b[0].toInt() and 0xFF) shl 24) or
+            ((b[1].toInt() and 0xFF) shl 16) or
+            ((b[2].toInt() and 0xFF) shl 8) or
+            (b[3].toInt() and 0xFF)
+    }
+
+    /** Unpack a 32-bit int into an IPv4 [InetAddress]. */
+    fun inetAddress(packed: Int): InetAddress {
+        val b = ByteArray(4)
+        b[0] = (packed ushr 24).toByte()
+        b[1] = (packed ushr 16).toByte()
+        b[2] = (packed ushr 8).toByte()
+        b[3] = packed.toByte()
+        return InetAddress.getByAddress(b)
+    }
+
+    /** Format a packed IPv4 int as a dotted string (e.g. `223.5.5.5`), no alloc. */
+    fun formatIp(packed: Int): String {
+        return "${(packed ushr 24) and 0xFF}." +
+            "${(packed ushr 16) and 0xFF}." +
+            "${(packed ushr 8) and 0xFF}." +
+            "${packed and 0xFF}"
+    }
+
+    /** True if a packed IPv4 address is broadcast or multicast — connect() to
+     * these always throws EACCES and should be silently skipped. */
+    fun isBroadcastOrMulticast(packed: Int): Boolean {
+        val first = (packed ushr 24) and 0xFF
+        // 255.255.255.255 (limited broadcast) or 224.0.0.0/4 (multicast)
+        return first == 255 || (first in 224..239)
     }
 }
